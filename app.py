@@ -9,8 +9,8 @@ st.set_page_config(page_title="Validador Logístico", layout="wide", page_icon="
 # --- CONFIGURACIÓN DE RUTAS ---
 PATH_MAESTRO = "data/maestro.csv" 
 
-st.title("🚚 Validador de Planning - Control de Frecuencias")
-st.markdown("Coteja el planning diario contra la columna **CALENDARIZADO** del maestro e informa la Zona.")
+st.title("🚚 Control planning CDMA")
+st.markdown("Coteja el planning diario de Trafico contra la el calendario de tiendas")
 
 if not os.path.exists(PATH_MAESTRO):
     st.error(f"⚠️ No se encontró el archivo maestro en: {PATH_MAESTRO}")
@@ -18,7 +18,7 @@ if not os.path.exists(PATH_MAESTRO):
 
 # --- CARGA DEL PLANNING DIARIO ---
 st.subheader("1. Subir Planning diario de Tráfico")
-file_planning = st.file_uploader("Arrastra aquí el archivo de Tráfico (formato Malvinas)", type=['xlsx', 'csv'])
+file_planning = st.file_uploader("Arrastra aquí el archivo del Planning", type=['xlsx', 'csv'])
 
 def obtener_letra_dia(fecha):
     if pd.isna(fecha): return "?"
