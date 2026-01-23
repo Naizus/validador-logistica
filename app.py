@@ -3,93 +3,134 @@ import pandas as pd
 import os
 import io
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Validador CDMA", layout="wide", page_icon="🚚")
-
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Gestión CDMA", layout="wide")
 PATH_MAESTRO = "data/maestro.csv"
 
 def obtener_letra(fecha):
     if pd.isna(fecha): return "?"
-    # 0=L, 1=M, 2=X, 3=J, 4=V, 5=S, 6=D
     mapa = {0: 'L', 1: 'M', 2: 'X', 3: 'J', 4: 'V', 5: 'S', 6: 'D'}
     return mapa[fecha.weekday()]
 
-# --- PANEL ADMIN PARA MODIFICAR MAESTRO ---
-with st.sidebar.expander("🔐 Panel de Control Maestro"):
-    clave = st.text_input("Ingrese Clave Admin", type="password")
-    if clave == "CDMA26":
-        st.success("Acceso Permitido")
+# --- LÓGICA DE ADMIN (Clave: CDMA26) ---
+if "admin_auth" not in st.session_state:
+    st.session_state.admin_auth = False
+
+with st.sidebar:
+    st.title("⚙️ Administración")
+    if not st.session_state.admin_auth:
+        clave = st.text_input("Clave de Acceso", type="password")
+        if clave == "CDMA26":
+            st.session_state.admin_auth = True
+            st.rerun()
+    else:
+        if st.button("🔓 Cerrar Sesión Admin"):
+            st.session_state.admin_auth = False
+            st.rerun()
+        
+        st.markdown("---")
+        opcion_admin = st.radio("Acción:", ["Modificar Tienda", "Añadir Tienda Nueva"])
+        
         if os.path.exists(PATH_MAESTRO):
             df_m = pd.read_csv(PATH_MAESTRO, sep=';', encoding='latin-1')
-            id_t = st.number_input("Buscar ID Tienda (Pto Op)", min_value=0, step=1)
             
-            if id_t in df_m['Pto Op'].values:
-                idx = df_m[df_m['Pto Op'] == id_t].index[0]
-                st.info(f"Tienda: {df_m.at[idx, 'Tienda']}")
+            if opcion_admin == "Modificar Tienda":
+                id_t = st.number_input("ID Tienda (Pto Op)", min_value=0, step=1)
+                if id_t in df_m['Pto Op'].values:
+                    idx = df_m[df_m['Pto Op'] == id_t].index[0]
+                    st.write(f"📍 **{df_m.at[idx, 'Tienda']}**")
+                    nuevo_ent = st.text_input("Días de Entrega", value=str(df_m.at[idx, 'DIA DE ENTREGA']))
+                    if st.button("Guardar Cambios"):
+                        df_m.at[idx, 'DIA DE ENTREGA'] = nuevo_ent
+                        df_m.to_csv(PATH_MAESTRO, sep=';', index=False, encoding='latin-1')
+                        st.success("Actualizado")
+                else:
+                    st.warning("ID no encontrado")
+
+            else: # Añadir Tienda Nueva
+                new_id = st.number_input("Nuevo Pto Op", min_value=1)
+                new_nom = st.text_input("Nombre Completo de Tienda")
+                new_zona = st.text_input("Zona Geográfica")
+                new_dias = st.text_input("Días de Entrega (Ej: LXV)")
                 
-                nuevo_ent = st.text_input("Modificar DIA DE ENTREGA", value=str(df_m.at[idx, 'DIA DE ENTREGA']))
-                
-                if st.button("💾 Actualizar Maestro"):
-                    df_m.at[idx, 'DIA DE ENTREGA'] = nuevo_ent
-                    df_m.to_csv(PATH_MAESTRO, sep=';', index=False, encoding='latin-1')
-                    st.toast("✅ Cambios guardados!")
-    elif clave:
-        st.error("Clave incorrecta")
+                if st.button("Registrar Tienda"):
+                    if new_id in df_m['Pto Op'].values:
+                        st.error("El ID ya existe en el maestro.")
+                    else:
+                        nueva_fila = pd.DataFrame([{
+                            'CD': 'Malvinas', 'Pto Op': new_id, 'Tienda': new_nom, 
+                            'Formato': 'Express', 'Zona Geografica': new_zona, 
+                            'DIA DE ENTREGA': new_dias
+                        }])
+                        df_m = pd.concat([df_m, nueva_fila], ignore_index=True)
+                        df_m.to_csv(PATH_MAESTRO, sep=';', index=False, encoding='latin-1')
+                        st.success("Tienda Añadida con éxito")
 
-# --- FLUJO PRINCIPAL ---
-st.title("🚚 Validación de Entrega")
+# --- APP PRINCIPAL ---
+st.title("🚚 Validador de Planning CDMA")
 
-if not os.path.exists(PATH_MAESTRO):
-    st.error("No se encontró 'data/maestro.csv'. Verifique la ruta.")
-    st.stop()
-
-archivo = st.file_uploader("Subir Planning (Excel o CSV)", type=['xlsx', 'csv'])
+archivo = st.file_uploader("Subir Planning", type=['xlsx', 'csv'])
 
 if archivo:
     try:
-        # 1. Cargar datos
         df_maestro = pd.read_csv(PATH_MAESTRO, sep=';', encoding='latin-1')
+        df_plan = pd.read_excel(archivo) if archivo.name.endswith('xlsx') else pd.read_csv(archivo, sep=None, engine='python', encoding='latin-1')
         
-        if archivo.name.endswith(('xlsx', 'xls')):
-            df_plan = pd.read_excel(archivo)
-        else:
-            df_plan = pd.read_csv(archivo, sep=None, engine='python', encoding='latin-1')
-        
-        # 2. Obtener el día del planning (Letra)
-        # Convertimos la columna FECHA a formato fecha
         df_plan['FECHA_DT'] = pd.to_datetime(df_plan['FECHA'], errors='coerce')
-        # Tomamos la letra del primer registro del archivo
-        letra_dia_archivo = obtener_letra(df_plan['FECHA_DT'].iloc[0])
+        fecha_ref = df_plan['FECHA_DT'].iloc[0]
+        letra_dia = obtener_letra(fecha_ref)
         
-        # 3. Cruzar con Maestro
-        df_res = pd.merge(df_plan, df_maestro[['Pto Op', 'DIA DE ENTREGA']], 
+        df_res = pd.merge(df_plan, df_maestro[['Pto Op', 'Tienda', 'DIA DE ENTREGA', 'Zona Geografica']], 
                           left_on='TIENDA', right_on='Pto Op', how='left')
 
-        # 4. Validar contra columna DIA DE ENTREGA
-        def validar_entrega(row):
-            if pd.isna(row['DIA DE ENTREGA']):
-                return "No corresponde"
+        def validar_detalle(row):
+            if pd.isna(row['DIA DE ENTREGA']): return "No corresponde"
+            m_ent = str(row['DIA DE ENTREGA']).upper()
             
-            # Limpiar el texto del maestro (quitar comas y espacios)
-            maestro_ent = str(row['DIA DE ENTREGA']).upper().replace(" ", "").replace(",", "")
+            # CASO ESPECIAL FIN DE SEMANA (Viernes o Sábado)
+            if letra_dia in ['V', 'S']:
+                tiene_dia_actual = letra_dia in m_ent
+                tiene_lunes = 'L' in m_ent
+                tiene_sabado = 'S' in m_ent
+
+                if tiene_dia_actual and tiene_lunes: return f"Corresponde ({'Viernes' if letra_dia=='V' else 'Sábado'} y Lunes)"
+                if tiene_dia_actual: return f"Corresponde ({'Viernes' if letra_dia=='V' else 'Sábado'})"
+                if tiene_lunes: return "Corresponde (Lunes)"
+                if letra_dia == 'V' and tiene_sabado: return "Corresponde (Sábado)"
             
-            if letra_dia_archivo in maestro_ent:
-                return "Corresponde"
+            # CASO NORMAL
             else:
-                return "No corresponde"
+                if letra_dia in m_ent: return "Corresponde"
+            
+            return "No corresponde"
 
-        df_res['RESULTADO'] = df_res.apply(validar_entrega, axis=1)
+        df_res['RESULTADO'] = df_res.apply(validar_detalle, axis=1)
 
-        # 5. Mostrar Tabla
-        st.subheader(f"Día del Planning detectado: {letra_dia_archivo}")
+        # UI Informativa
+        st.info(f"📅 **Día del Planning**: {letra_dia}")
+        if letra_dia in ['V', 'S']:
+            st.warning("🔄 **Modo Fin de Semana**: Se contempla entrega de Lunes si el día actual no aplica.")
+
+        # Estilo de la tabla
+        def color_val(val):
+            if "Corresponde" in val: return 'background-color: #c6efce; color: #006100; font-weight: bold'
+            return 'background-color: #ffc7ce; color: #9c0006'
+
+        cols = ['RESULTADO', 'TIENDA', 'NOMBRE_TIENDA', 'Zona Geografica', 'DIA DE ENTREGA']
+        df_final = df_res[cols]
+        st.dataframe(df_final.style.applymap(color_val, subset=['RESULTADO']), use_container_width=True)
+
+        # BOTÓN EXCEL
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_final.to_excel(writer, index=False, sheet_name='Validacion')
         
-        def resaltar_resultado(val):
-            color = '#c6efce' if val == "Corresponde" else '#ffc7ce'
-            texto = '#006100' if val == "Corresponde" else '#9c0006'
-            return f'background-color: {color}; color: {texto}; font-weight: bold'
-
-        columnas_finales = ['RESULTADO', 'TIENDA', 'NOMBRE_TIENDA', 'DIA DE ENTREGA']
-        st.dataframe(df_res[columnas_finales].style.applymap(resaltar_resultado, subset=['RESULTADO']), use_container_width=True)
+        st.download_button(
+            label="📥 Exportar Reporte a Excel",
+            data=output.getvalue(),
+            file_name=f"Validacion_{letra_dia}_{fecha_ref.strftime('%d-%m')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
     except Exception as e:
         st.error(f"Error al procesar: {e}")
