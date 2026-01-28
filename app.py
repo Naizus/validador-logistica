@@ -55,16 +55,12 @@ with st.sidebar:
                 
                 if st.button("Registrar Tienda"):
                     if new_id in df_m['Pto Op'].values:
-                        st.error("El ID ya existe en el maestro.")
+                        st.error("El ID ya existe.")
                     else:
-                        nueva_fila = pd.DataFrame([{
-                            'CD': 'Malvinas', 'Pto Op': new_id, 'Tienda': new_nom, 
-                            'Formato': 'Express', 'Zona Geografica': new_zona, 
-                            'DIA DE ENTREGA': new_dias
-                        }])
+                        nueva_fila = pd.DataFrame([{'CD': 'Malvinas', 'Pto Op': new_id, 'Tienda': new_nom, 'Formato': 'Express', 'Zona Geografica': new_zona, 'DIA DE ENTREGA': new_dias}])
                         df_m = pd.concat([df_m, nueva_fila], ignore_index=True)
                         df_m.to_csv(PATH_MAESTRO, sep=';', index=False, encoding='latin-1')
-                        st.success("Tienda Añadida con éxito")
+                        st.success("Tienda Añadida")
 
 # --- APP PRINCIPAL ---
 st.title("🚚 Validador de Planning CDMA")
@@ -80,57 +76,59 @@ if archivo:
         fecha_ref = df_plan['FECHA_DT'].iloc[0]
         letra_dia = obtener_letra(fecha_ref)
         
+        # 1. Procesar tiendas que ESTÁN en el planning
         df_res = pd.merge(df_plan, df_maestro[['Pto Op', 'Tienda', 'DIA DE ENTREGA', 'Zona Geografica']], 
                           left_on='TIENDA', right_on='Pto Op', how='left')
 
         def validar_detalle(row):
             if pd.isna(row['DIA DE ENTREGA']): return "No corresponde"
             m_ent = str(row['DIA DE ENTREGA']).upper()
-            
-            # CASO ESPECIAL FIN DE SEMANA (Viernes o Sábado)
             if letra_dia in ['V', 'S']:
-                tiene_dia_actual = letra_dia in m_ent
-                tiene_lunes = 'L' in m_ent
-                tiene_sabado = 'S' in m_ent
-
-                if tiene_dia_actual and tiene_lunes: return f"Corresponde ({'Viernes' if letra_dia=='V' else 'Sábado'} y Lunes)"
-                if tiene_dia_actual: return f"Corresponde ({'Viernes' if letra_dia=='V' else 'Sábado'})"
-                if tiene_lunes: return "Corresponde (Lunes)"
-                if letra_dia == 'V' and tiene_sabado: return "Corresponde (Sábado)"
-            
-            # CASO NORMAL
+                if letra_dia in m_ent and 'L' in m_ent: return f"Corresponde ({'Viernes' if letra_dia=='V' else 'Sábado'} y Lunes)"
+                if letra_dia in m_ent: return f"Corresponde ({'Viernes' if letra_dia=='V' else 'Sábado'})"
+                if 'L' in m_ent: return "Corresponde (Lunes)"
+                if letra_dia == 'V' and 'S' in m_ent: return "Corresponde (Sábado)"
             else:
                 if letra_dia in m_ent: return "Corresponde"
-            
             return "No corresponde"
 
         df_res['RESULTADO'] = df_res.apply(validar_detalle, axis=1)
 
-        # UI Informativa
-        st.info(f"📅 **Día del Planning**: {letra_dia}")
-        if letra_dia in ['V', 'S']:
-            st.warning("🔄 **Modo Fin de Semana**: Se contempla entrega de Lunes si el día actual no aplica.")
+        # 2. Identificar tiendas del Maestro que DEBERÍAN estar pero NO fueron planificadas
+        dias_busqueda = [letra_dia]
+        if letra_dia == 'V': dias_busqueda.extend(['S', 'L'])
+        if letra_dia == 'S': dias_busqueda.append('L')
 
-        # Estilo de la tabla
+        def aplica_dia(dias_maestro):
+            return any(d in str(dias_maestro).upper() for d in dias_busqueda)
+
+        tiendas_deberian = df_maestro[df_maestro['DIA DE ENTREGA'].apply(aplica_dia)]
+        tiendas_no_planificadas = tiendas_deberian[~tiendas_deberian['Pto Op'].isin(df_plan['TIENDA'])]
+
+        # Formatear para unir
+        df_np = tiendas_no_planificadas[['Pto Op', 'Tienda', 'Zona Geografica', 'DIA DE ENTREGA']].copy()
+        df_np = df_np.rename(columns={'Pto Op': 'TIENDA', 'Tienda': 'NOMBRE_TIENDA'})
+        df_np['RESULTADO'] = "No Planificado"
+
+        # Unir ambos universos
+        cols_finales = ['RESULTADO', 'TIENDA', 'NOMBRE_TIENDA', 'Zona Geografica', 'DIA DE ENTREGA']
+        df_final = pd.concat([df_res[cols_finales], df_np], ignore_index=True)
+
+        # UI
+        st.info(f"📅 **Día del Planning**: {letra_dia}")
+        
         def color_val(val):
             if "Corresponde" in val: return 'background-color: #c6efce; color: #006100; font-weight: bold'
+            if val == "No Planificado": return 'background-color: #ffe5b4; color: #cc7a00; font-weight: bold'
             return 'background-color: #ffc7ce; color: #9c0006'
 
-        cols = ['RESULTADO', 'TIENDA', 'NOMBRE_TIENDA', 'Zona Geografica', 'DIA DE ENTREGA']
-        df_final = df_res[cols]
         st.dataframe(df_final.style.applymap(color_val, subset=['RESULTADO']), use_container_width=True)
 
         # BOTÓN EXCEL
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_final.to_excel(writer, index=False, sheet_name='Validacion')
-        
-        st.download_button(
-            label="📥 Exportar Reporte a Excel",
-            data=output.getvalue(),
-            file_name=f"Validacion_{letra_dia}_{fecha_ref.strftime('%d-%m')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        st.download_button(label="📥 Exportar Reporte a Excel", data=output.getvalue(), file_name=f"Validacion_{letra_dia}.xlsx")
 
     except Exception as e:
-        st.error(f"Error al procesar: {e}")
+        st.error(f"Error: {e}")
